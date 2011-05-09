@@ -13,7 +13,7 @@
             <include name="*.jar"/>
         </fileset>
         <fileset dir="${play.path}/framework">
-            <include name="play.jar"/>
+            <include name="*.jar"/>
         </fileset>
     </path>
 
