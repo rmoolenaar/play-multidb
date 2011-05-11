@@ -6,6 +6,8 @@ import java.io.StringWriter;
 import java.sql.Connection;
 import java.sql.Driver;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.List;
@@ -37,6 +39,7 @@ public class MDBPlugin extends PlayPlugin
 {
 
 	private static final String MDB_ALL_KEY = "all";
+	private static final String MDB_DBCONF_KEY = "db";
 	private static final String MDB_CONF_PREFIX = "mdb.";
 	public static final String MDB_DRIVER_PREFIX = MDB_CONF_PREFIX + "driver.";
 	public static final String MDB_URL_PREFIX = MDB_CONF_PREFIX + "url.";
@@ -47,6 +50,8 @@ public class MDBPlugin extends PlayPlugin
 	public static final String MDB_POOL_MAX_PREFIX = MDB_CONF_PREFIX + "pool.maxSize.";
 	public static final String MDB_POOL_MIN_PREFIX = MDB_CONF_PREFIX + "pool.minSize.";
 	public static final String MDB_KEY_PREFIX = MDB_CONF_PREFIX + "key.";
+	public static final String MDB_SQLCONF_PREFIX = MDB_CONF_PREFIX + "sql.";
+	public static final String MDB_URLPREFIXCONF_PREFIX = MDB_CONF_PREFIX + "urlprefix.";
 
 	@Override
 	public void onApplicationStart()
@@ -136,8 +141,110 @@ public class MDBPlugin extends PlayPlugin
 				Logger.warn("Unexpected non-string property key: " + entry.getKey());
 			}
 		}
-		
+
+		/* Check for the existence of 'db' entries and then overwrite the current dbMap
+		 * with the data from the mdb.sql.db database query
+		 */
+		DbParameters allEntry = dbMap.get(MDB_ALL_KEY);
+		DbParameters dbEntry = dbMap.get(MDB_DBCONF_KEY);
+		if (dbEntry != null)
+		{
+			if (allEntry != null)
+			{
+				dbEntry.inherit(allEntry);
+			}
+			loadDataSourcesFromDatabase(dbEntry, dbMap);
+		}
 		return dbMap;
+	}
+
+	/* Extract the DataSource parameters from the given database query
+	 * This will overwrite the current datasources (except 'all' and 'db')
+	 * @param dbEntry
+	 * @param dbMap
+	 * @author Remco Moolenaar
+	 */
+	private static void loadDataSourcesFromDatabase(DbParameters dbEntry, Map<String, DbParameters> dbMap)
+	{
+		Connection connection = null;
+		PreparedStatement preparedStatement = null;
+		ResultSet resultSet = null;
+		Integer keyID = 1;
+		try {
+			// Create Datasource
+			ComboPooledDataSource ds = makeDatasource(dbEntry);
+			connection = ds.getConnection();
+			// Prepare statement from the parameter mdb.sql.db 
+			preparedStatement = connection.prepareStatement(
+				dbEntry.sql, 
+				ResultSet.TYPE_FORWARD_ONLY,
+				ResultSet.CONCUR_READ_ONLY
+			);
+			preparedStatement.setFetchSize(50); 
+			// Execute query
+			resultSet = preparedStatement.executeQuery();
+			// Loop through resultset and add/alter the dbMap entries for a new datasource
+			while (resultSet.next()) {
+				addParameters(resultSet, dbEntry, dbMap, keyID++);
+			}
+		} catch (Exception e) {
+			Logger.error(e, "Error adding datasource from database: " + dbEntry);
+		} finally {
+			if (resultSet != null) {
+				try {
+					resultSet.close();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+			}
+			if (preparedStatement != null) {
+				try {
+					preparedStatement.close();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+			}
+			if (connection != null) {
+				try {
+					connection.close();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+			}
+		}
+	}
+
+	/* Extract the DataSource parameters from the given database query
+	 * This will overwrite the current datasources (except 'all' and 'db')
+	 * @param resultset
+	 * @param dbEntry
+	 * @param dbMap
+	 * @param keyID
+	 * @author Remco Moolenaar
+	 */
+	private static void addParameters(ResultSet resultSet, DbParameters dbEntry, Map<String, DbParameters> dbMap, Integer keyID) throws SQLException
+	{
+		// Create key from current row number
+		String mapKey = keyID.toString();
+		// Get/create DBParameters object
+		DbParameters mapEntry = dbMap.get(mapKey);
+		if (mapEntry == null)
+		{
+			mapEntry = new DbParameters();
+			dbMap.put(mapKey, mapEntry);
+		}
+		// Add NAME from resultset
+		String name = resultSet.getString("name");
+		applyParameter((String) name, MDB_KEY_PREFIX, mapEntry);
+		// Add JDBC_URL from resultset
+		String jdbcUrl = resultSet.getString("jdbc_url");
+		applyParameter((String) dbEntry.urlPrefix + jdbcUrl, MDB_URL_PREFIX, mapEntry);
+		// Add USER from resultset
+		String user = resultSet.getString("username");
+		applyParameter((String) user, MDB_USER_PREFIX, mapEntry);
+		// Add PASSWORD from resultset
+		String pass = resultSet.getString("password");
+		applyParameter((String) pass, MDB_PASS_PREFIX, mapEntry);
 	}
 
 	/**
@@ -155,6 +262,14 @@ public class MDBPlugin extends PlayPlugin
 		else if (propKey.startsWith(MDB_KEY_PREFIX))
 		{
 			mapEntry.key = propValue;
+		}
+		else if (propKey.startsWith(MDB_SQLCONF_PREFIX))
+		{
+			mapEntry.sql = propValue;
+		}
+		else if (propKey.startsWith(MDB_URLPREFIXCONF_PREFIX))
+		{
+			mapEntry.urlPrefix = propValue;
 		}
 		else if (propKey.startsWith(MDB_URL_PREFIX))
 		{
@@ -250,6 +365,8 @@ public class MDBPlugin extends PlayPlugin
 		public String driver;
 		public String user;
 		public String pass;
+		public String sql;
+		public String urlPrefix;
 		public String poolTimeout;
 		public String idleTime;
 		public String poolMaxSize;
@@ -263,6 +380,8 @@ public class MDBPlugin extends PlayPlugin
 			this.poolMinSize = StringUtils.defaultIfEmpty(this.poolMinSize, allEntry.poolMinSize);
 			this.poolTimeout = StringUtils.defaultIfEmpty(this.poolTimeout, allEntry.poolTimeout);
 			this.idleTime = StringUtils.defaultIfEmpty(this.idleTime, allEntry.idleTime);
+			this.urlPrefix = StringUtils.defaultIfEmpty(this.urlPrefix, allEntry.urlPrefix);
+			this.sql = StringUtils.defaultIfEmpty(this.sql, allEntry.sql);
 			this.url = StringUtils.defaultIfEmpty(this.url, allEntry.url);
 		}
 	}
