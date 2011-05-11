@@ -43,6 +43,7 @@ public class MDBPlugin extends PlayPlugin
 	public static final String MDB_USER_PREFIX = MDB_CONF_PREFIX + "user.";
 	public static final String MDB_PASS_PREFIX = MDB_CONF_PREFIX + "pass.";
 	public static final String MDB_POOL_TIMEOUT_PREFIX = MDB_CONF_PREFIX + "pool.timeout.";
+	public static final String MDB_POOL_IDLETIME_PREFIX = MDB_CONF_PREFIX + "pool.maxIdleTime.";
 	public static final String MDB_POOL_MAX_PREFIX = MDB_CONF_PREFIX + "pool.maxSize.";
 	public static final String MDB_POOL_MIN_PREFIX = MDB_CONF_PREFIX + "pool.minSize.";
 	public static final String MDB_KEY_PREFIX = MDB_CONF_PREFIX + "key.";
@@ -171,6 +172,10 @@ public class MDBPlugin extends PlayPlugin
 		{
 			mapEntry.poolTimeout = propValue;
 		}
+		else if (propKey.startsWith(MDB_POOL_IDLETIME_PREFIX))
+		{
+			mapEntry.idleTime = propValue;
+		}
 		else if (propKey.startsWith(MDB_POOL_MAX_PREFIX))
 		{
 			mapEntry.poolMaxSize = propValue;
@@ -246,6 +251,7 @@ public class MDBPlugin extends PlayPlugin
 		public String user;
 		public String pass;
 		public String poolTimeout;
+		public String idleTime;
 		public String poolMaxSize;
 		public String poolMinSize;
 		public void inherit(DbParameters allEntry)
@@ -256,6 +262,7 @@ public class MDBPlugin extends PlayPlugin
 			this.poolMaxSize = StringUtils.defaultIfEmpty(this.poolMaxSize, allEntry.poolMaxSize);
 			this.poolMinSize = StringUtils.defaultIfEmpty(this.poolMinSize, allEntry.poolMinSize);
 			this.poolTimeout = StringUtils.defaultIfEmpty(this.poolTimeout, allEntry.poolTimeout);
+			this.idleTime = StringUtils.defaultIfEmpty(this.idleTime, allEntry.idleTime);
 			this.url = StringUtils.defaultIfEmpty(this.url, allEntry.url);
 		}
 	}
@@ -337,6 +344,7 @@ public class MDBPlugin extends PlayPlugin
 		ds.setAcquireRetryAttempts(1);
 		ds.setAcquireRetryDelay(0);
 		ds.setCheckoutTimeout(Integer.parseInt(StringUtils.defaultIfEmpty(parms.poolTimeout, "5000")));
+		ds.setMaxIdleTime(Integer.parseInt(StringUtils.defaultIfEmpty(parms.idleTime, "5000")));
 		ds.setBreakAfterAcquireFailure(true);
 		ds.setMaxPoolSize(Integer.parseInt(StringUtils.defaultIfEmpty(parms.poolMaxSize, "30")));
 		ds.setMinPoolSize(Integer.parseInt(StringUtils.defaultIfEmpty(parms.poolMinSize, "1")));
