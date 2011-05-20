@@ -59,6 +59,7 @@ public class MJPAPlugin extends PlayPlugin
 	/**
 	 * The map from database keys to their corresponding entity manager factories.
 	 */
+	public static Map<String, Ejb3Configuration> configMap = new HashMap<String, Ejb3Configuration>();
 	public static Map<String, EntityManagerFactory> factoryMap = new HashMap<String, EntityManagerFactory>();
 
 	/**
@@ -98,6 +99,13 @@ public class MJPAPlugin extends PlayPlugin
     			//
     			// Start the transaction
     			//
+				Ejb3Configuration cfg = configMap.get(dbKey);
+				if (cfg != null) {
+					EntityManagerFactory factory = cfg.buildEntityManagerFactory(); 
+					JPA.entityManagerFactory = factory;
+					factoryMap.put(dbKey, factory);
+					configMap.remove(dbKey);
+				}
     			startTx(dbKey, false);
 			}
 		}
@@ -295,9 +303,13 @@ public class MJPAPlugin extends PlayPlugin
     				Logger.trace("Initializing JPA ...");
     				try
     				{
-    					EntityManagerFactory factory = cfg.buildEntityManagerFactory(); 
-    					JPA.entityManagerFactory = factory;
-    					factoryMap.put(entry.getKey(), factory);
+    					if (JPA.entityManagerFactory == null) {
+	    					EntityManagerFactory factory = cfg.buildEntityManagerFactory(); 
+	    					JPA.entityManagerFactory = factory;
+	    					factoryMap.put(entry.getKey(), factory);
+    					} else {
+        					configMap.put(entry.getKey(), cfg);
+    					}
     					log.debug("Added datasource: " + datasource.getJdbcUrl());
     				}
     				catch (PersistenceException e)
