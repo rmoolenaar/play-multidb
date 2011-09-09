@@ -3,11 +3,10 @@ package play.db.jpa;
 import java.io.Serializable;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
-import java.util.HashMap;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.Map.Entry;
 
 import javax.persistence.Entity;
 import javax.persistence.EntityManager;
@@ -43,8 +42,6 @@ import play.mvc.Http.Request;
 import play.mvc.results.NotFound;
 import play.utils.Utils;
 
-import com.mchange.v2.c3p0.ComboPooledDataSource;
-
 /**
  * The multiple JPA plugin, which supports setting the database connection based on a request parameter. 
  * 
@@ -57,89 +54,9 @@ public class MJPAPlugin extends PlayPlugin
 	public static boolean autoTxs = true;
 
 	/**
-	 * The map from database keys to their corresponding entity manager factories.
-	 */
-	public static Map<String, Ejb3Configuration> configMap = new HashMap<String, Ejb3Configuration>();
-	public static Map<String, EntityManagerFactory> factoryMap = new HashMap<String, EntityManagerFactory>();
-
-	/**
 	 * The default key extractor, if none is defined within the application classes.
 	 */
 	public static RequestDBKeyExtractor keyExtractor = new DomainDBKeyExtractor();
-
-	@Override
-	public void beforeInvocation()
-	{
-		//
-		// Prevent the regular JPA Plugin from starting a transaction.
-		//
-		JPA.entityManagerFactory = null;
-		
-		//
-		//	If we have no databases defined, and we have a directive to permit this state, allow it.
-		//
-		if (factoryMap.isEmpty() && Play.configuration.getProperty("mjpa.runWithNoDB","").equals("true"))
-		{
-			log.debug("Empty factory map--using dummy factory");
-			JPA.entityManagerFactory = getDummyFactory();
-			return;
-		}
-		
-		log.debug("Extracting DB key from request: " + Request.current());
-
-		//
-		// Find the database key, so that we'll have one for the transaction.
-		//
-		String dbKey = keyExtractor.extractKey(Request.current());
-		log.debug("Found key: " + dbKey);
-		try
-		{
-			if (dbKey != null)
-			{
-    			//
-    			// Start the transaction
-    			//
-				Ejb3Configuration cfg = configMap.get(dbKey);
-				if (cfg != null) {
-					EntityManagerFactory factory = cfg.buildEntityManagerFactory(); 
-					JPA.entityManagerFactory = factory;
-					factoryMap.put(dbKey, factory);
-					configMap.remove(dbKey);
-				}
-    			startTx(dbKey, false);
-			}
-		}
-		catch (InvalidDatabaseException e)
-		{
-			throw new NotFound(e.getMessage());
-		}
-	}
-
-	/**
-	 * Starts the transaction on the specified database.
-	 * 
-	 * @param factory
-	 * @param readOnly
-	 */
-	public static void startTx(String dbKey, boolean readOnly)
-	{
-		EntityManagerFactory factory = factoryMap.get(dbKey);
-		log.debug("Starting transaction with factory" + factory + " on DB: " + dbKey);
-		if (dbKey == null || factory == null)
-		{	
-			log.warn("No database found for key: '" + dbKey + "'.  Skipping database connection.");
-			return;
-		}
-
-		EntityManager manager = factory.createEntityManager();
-		manager.setFlushMode(FlushModeType.COMMIT);
-		if (autoTxs)
-		{
-			manager.getTransaction().begin();
-		}
-		log.debug("Creating JPA context: " + manager + " for db: " + dbKey);
-		JPA.createContext(manager, readOnly);
-	}
 
 	/**
 	 * Rolls back the transaction in the current JPA's local implementation.
@@ -259,7 +176,6 @@ public class MJPAPlugin extends PlayPlugin
 		}
 	}
 
-	@SuppressWarnings("unchecked")
 	@Override
 	public void onApplicationStart()
 	{
@@ -275,7 +191,7 @@ public class MJPAPlugin extends PlayPlugin
 			{
 				return;
 			}
-			if (MDB.datasources == null || MDB.datasources.isEmpty())
+			if (MDB.mainDataSource == null)
 			{
                 if (Play.configuration.getProperty("mjpa.runWithNoDB","").equals("true"))
                 {
@@ -293,31 +209,21 @@ public class MJPAPlugin extends PlayPlugin
 			else
 			{
     			//
-    			//	Iterate over the datasources and build a configuration for each.
+    			//	Get the main datasource and create the JPA entityManager.
     			//
-    			for (Entry<String, DataSource> entry : MDB.datasources.entrySet())
-    			{
-    				ComboPooledDataSource datasource = (ComboPooledDataSource) entry.getValue();
-    				
-    				Ejb3Configuration cfg = buildEjbConfiguration(classes, datasource);
-    				Logger.trace("Initializing JPA ...");
-    				try
-    				{
-    					if (JPA.entityManagerFactory == null) {
-	    					EntityManagerFactory factory = cfg.buildEntityManagerFactory(); 
-	    					JPA.entityManagerFactory = factory;
-	    					factoryMap.put(entry.getKey(), factory);
-    					} else {
-        					configMap.put(entry.getKey(), cfg);
-    					}
-    					log.debug("Added datasource: " + datasource.getJdbcUrl());
-    				}
-    				catch (PersistenceException e)
-    				{
-    					throw new JPAException(e.getMessage(), e.getCause() != null
-    							? e.getCause() : e);
-    				}
-    			}
+				DataSource datasource = (DataSource) MDB.mainDataSource;
+				
+				Ejb3Configuration cfg = buildEjbConfiguration(classes, datasource);
+				Logger.trace("Initializing JPA ...");
+				try
+				{
+					EntityManagerFactory factory = cfg.buildEntityManagerFactory(); 
+					JPA.entityManagerFactory = factory;
+				}
+				catch (PersistenceException e)
+				{
+					throw new JPAException(e.getMessage(), e.getCause() != null ? e.getCause() : e);
+				}
 			}
 			JPQL.instance = new JPQL();
 		}
@@ -360,9 +266,8 @@ public class MJPAPlugin extends PlayPlugin
 	 * @param datasource
 	 * @return
 	 */
-	@SuppressWarnings("unchecked")
 	public static Ejb3Configuration buildEjbConfiguration(List<Class> classes,
-			ComboPooledDataSource datasource)
+			DataSource datasource)
 	{
 		Ejb3Configuration cfg = new Ejb3Configuration();
 		cfg.setDataSource(datasource);
@@ -371,7 +276,7 @@ public class MJPAPlugin extends PlayPlugin
 			cfg.setProperty("hibernate.hbm2ddl.auto", Play.configuration.getProperty(
 					"jpa.ddl", "update"));
 		}
-		cfg.setProperty("hibernate.dialect", getDefaultDialect(datasource.getDriverClass()));
+		cfg.setProperty("hibernate.dialect", getDefaultDialect(""));
 		cfg.setProperty("javax.persistence.transaction", "RESOURCE_LOCAL");
 
 		// Explicit SAVE for JPASupport is implemented here
@@ -533,7 +438,6 @@ public class MJPAPlugin extends PlayPlugin
 				return getDummyManager();
 			}
 
-			@SuppressWarnings("unchecked")
 			@Override
 			public EntityManager createEntityManager(Map arg0)
 			{
@@ -605,7 +509,6 @@ public class MJPAPlugin extends PlayPlugin
 				return null;
 			}
 
-			@SuppressWarnings("unchecked")
 			@Override
 			public Query createNativeQuery(String arg0, Class arg1)
 			{

@@ -10,25 +10,17 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Map.Entry;
 
-import javax.persistence.Entity;
-import javax.persistence.EntityManagerFactory;
-import javax.persistence.PersistenceException;
 import javax.sql.DataSource;
 
 import org.apache.commons.lang.StringUtils;
-import org.hibernate.ejb.Ejb3Configuration;
 
 import play.Logger;
 import play.Play;
 import play.PlayPlugin;
-import play.db.jpa.JPA;
-import play.db.jpa.MJPAPlugin;
-import play.exceptions.JPAException;
 
 import com.mchange.v2.c3p0.ComboPooledDataSource;
 
@@ -58,7 +50,8 @@ public class MDBPlugin extends PlayPlugin
 	{
 		if (changed())
 		{
-			MDB.datasources = new HashMap<String, DataSource>();
+			MDB.datasources = new HashMap<Object, Object>();
+			MDB.credentials = new HashMap<String, DbParameters>();
 			Map<String, DbParameters> dbMap = new HashMap<String, DbParameters>();
 			try
 			{
@@ -103,6 +96,10 @@ public class MDBPlugin extends PlayPlugin
 				{
 					Logger.error(e, "Cannot connect to the database [" + parm.getKey() + "]: %s", e.getMessage());
 				}
+			}
+			if (MDB.mainDataSource != null) {
+				MDB.mainDataSource.afterPropertiesSet();
+
 			}
 		}
 	}
@@ -321,26 +318,30 @@ public class MDBPlugin extends PlayPlugin
 			return sw.toString();
 		}
 		
-		for (Entry<String, DataSource> entry : MDB.datasources.entrySet())
+		for (Entry<Object, Object> entry : MDB.datasources.entrySet())
 		{
-			if (entry == null || entry.getValue() == null || !(entry.getValue() instanceof ComboPooledDataSource))
+			if (entry == null || entry.getValue() == null || !(entry.getValue() instanceof DataSource))
 			{
 				out.println("Datasource [" + entry.getKey() + "]:");
 				out.println("~~~~~~~~~~~");
 				out.println("(not yet connected)");
 				continue;
 			}
-			ComboPooledDataSource datasource = (ComboPooledDataSource) entry.getValue();
+			DataSource datasource = (DataSource) entry.getValue();
 			out.println("Datasource [" + entry.getKey() + "]:");
 			out.println("~~~~~~~~~~~");
-			out.println("Jdbc url: " + datasource.getJdbcUrl());
-			out.println("Jdbc driver: " + datasource.getDriverClass());
-			out.println("Jdbc user: " + datasource.getUser());
-			out.println("Jdbc password: " + datasource.getPassword());
-			out.println("Min pool size: " + datasource.getMinPoolSize());
-			out.println("Max pool size: " + datasource.getMaxPoolSize());
-			out.println("Initial pool size: " + datasource.getInitialPoolSize());
-			out.println("Checkout timeout: " + datasource.getCheckoutTimeout());
+			try {
+				out.println("Jdbc url: " + datasource.getConnection().getMetaData().getURL());
+			} catch (SQLException e) {
+				e.printStackTrace();
+			}
+//			out.println("Jdbc driver: " + datasource.getDriverClass());
+//			out.println("Jdbc user: " + datasource.getUser());
+//			out.println("Jdbc password: " + datasource.getPassword());
+//			out.println("Min pool size: " + datasource.getMinPoolSize());
+//			out.println("Max pool size: " + datasource.getMaxPoolSize());
+//			out.println("Initial pool size: " + datasource.getInitialPoolSize());
+//			out.println("Checkout timeout: " + datasource.getCheckoutTimeout());
 			out.println("");
 		}
 		out.println("=================================================");
@@ -354,60 +355,24 @@ public class MDBPlugin extends PlayPlugin
 	}
 
 	/**
-	 * Database parameters, which are needed for each database.
-	 * 
-	 * @author dcardon
-	 */
-	private static class DbParameters
-	{
-		public String key;
-		public String url;
-		public String driver;
-		public String user;
-		public String pass;
-		public String sql;
-		public String urlPrefix;
-		public String poolTimeout;
-		public String idleTime;
-		public String poolMaxSize;
-		public String poolMinSize;
-		public void inherit(DbParameters allEntry)
-		{
-			this.driver = StringUtils.defaultIfEmpty(this.driver, allEntry.driver);
-			this.pass = StringUtils.defaultIfEmpty(this.pass, allEntry.pass);
-			this.user = StringUtils.defaultIfEmpty(this.user, allEntry.user);
-			this.poolMaxSize = StringUtils.defaultIfEmpty(this.poolMaxSize, allEntry.poolMaxSize);
-			this.poolMinSize = StringUtils.defaultIfEmpty(this.poolMinSize, allEntry.poolMinSize);
-			this.poolTimeout = StringUtils.defaultIfEmpty(this.poolTimeout, allEntry.poolTimeout);
-			this.idleTime = StringUtils.defaultIfEmpty(this.idleTime, allEntry.idleTime);
-			this.urlPrefix = StringUtils.defaultIfEmpty(this.urlPrefix, allEntry.urlPrefix);
-			this.sql = StringUtils.defaultIfEmpty(this.sql, allEntry.sql);
-			this.url = StringUtils.defaultIfEmpty(this.url, allEntry.url);
-		}
-	}
-
-	/**
 	 * Creates a connection using the passed database parameters.
 	 * @param parms
 	 * @throws Exception
 	 */
 	private static void makeConnection(DbParameters parms) throws Exception
 	{
-		ComboPooledDataSource ds = makeDatasource(parms);
-		MDB.datasources.put(parms.key, ds);
-		Connection c = null;
-		try
-		{
-			c = ds.getConnection();
-		}
-		finally
-		{
-			if (c != null)
-			{
-				c.close();
+		MDB.credentials.put(parms.key, parms);
+		if (MDB.datasources.get(parms.url) == null) {
+			ComboPooledDataSource ds = makeDatasource(parms);
+			MDB.datasources.put(parms.url, ds);
+			if (MDB.mainDataSource == null) {
+				// Create RoutingDataSource
+				RoutingDataSource routingDataSource = new RoutingDataSource();
+				routingDataSource.setTargetDataSources(MDB.datasources);
+				routingDataSource.setDefaultTargetDataSource(ds);
+				MDB.mainDataSource = routingDataSource;
 			}
 		}
-		Logger.info("Connected to %s", ds.getJdbcUrl());
 	}
 
 	/**
@@ -453,22 +418,24 @@ public class MDBPlugin extends PlayPlugin
 			}
 		}
 
-		System.setProperty("com.mchange.v2.log.MLog", "com.mchange.v2.log.FallbackMLog");
-		System.setProperty("com.mchange.v2.log.FallbackMLog.DEFAULT_CUTOFF_LEVEL", "OFF");
+//		System.setProperty("com.mchange.v2.log.MLog", "com.mchange.v2.log.FallbackMLog");
+//		System.setProperty("com.mchange.v2.log.FallbackMLog.DEFAULT_CUTOFF_LEVEL", "INFO");
 		ComboPooledDataSource ds = new ComboPooledDataSource();
 		ds.setDriverClass(parms.driver);
 		ds.setJdbcUrl(parms.url);
 		ds.setUser(parms.user);
 		ds.setPassword(parms.pass);
-		ds.setAcquireRetryAttempts(1);
-		ds.setAcquireRetryDelay(0);
+        ds.setAcquireRetryAttempts(10);
 		ds.setCheckoutTimeout(Integer.parseInt(StringUtils.defaultIfEmpty(parms.poolTimeout, "5000")));
 		ds.setMaxIdleTime(Integer.parseInt(StringUtils.defaultIfEmpty(parms.idleTime, "5000")));
 		ds.setBreakAfterAcquireFailure(true);
 		ds.setMaxPoolSize(Integer.parseInt(StringUtils.defaultIfEmpty(parms.poolMaxSize, "30")));
 		ds.setMinPoolSize(Integer.parseInt(StringUtils.defaultIfEmpty(parms.poolMinSize, "1")));
-		ds.setTestConnectionOnCheckout(true);
-		return ds;
+        ds.setIdleConnectionTestPeriod(10);
+        ds.setTestConnectionOnCheckin(true);
+//        ds.setUnreturnedConnectionTimeout(20);
+//        ds.setDebugUnreturnedConnectionStackTraces(true);
+        return ds;
 	}
 
 	/**
@@ -494,7 +461,7 @@ public class MDBPlugin extends PlayPlugin
 		//
 		for (Entry<String, DbParameters> parm : dbMap.entrySet())
 		{
-			if (MDB.datasources == null || MDB.datasources.isEmpty())
+			if (MDB.credentials == null || MDB.credentials.isEmpty())
 			{
 				return true;
 			}
@@ -517,26 +484,22 @@ public class MDBPlugin extends PlayPlugin
 				continue;
 			}
 			
-			ComboPooledDataSource ds = (ComboPooledDataSource) MDB.datasources.get(parm.getKey());
-			if (ds == null)
+			DbParameters dsParam = (DbParameters) MDB.credentials.get(parm.getKey());
+			if (dsParam == null)
 			{
 				hasChanged |= true;
 			}
 			else
 			{
-				if (!StringUtils.defaultString(db.driver).equals(ds.getDriverClass()))
+				if (!StringUtils.defaultString(db.driver).equals(dsParam.driver))
 				{
 					hasChanged |= true;
 				}
-				if (!StringUtils.defaultString(db.url).equals(ds.getJdbcUrl()))
+				if (!StringUtils.defaultString(db.url).equals(dsParam.url))
 				{
 					hasChanged |= true;
 				}
-				if (!StringUtils.defaultString(db.user).equals(ds.getUser()))
-				{
-					hasChanged |= true;
-				}
-				if (!StringUtils.defaultString(db.pass).equals(ds.getPassword()))
+				if (!StringUtils.defaultString(db.user).equals(dsParam.user))
 				{
 					hasChanged |= true;
 				}
@@ -550,7 +513,6 @@ public class MDBPlugin extends PlayPlugin
 	 * Adds a database to the application server while it's running.
 	 * @param dbParms
 	 */
-	@SuppressWarnings("unchecked")
 	public static void addDatabase(Map<String, String> dbParms)
 	{
 		Map<String, DbParameters> dbMap = extractDbParameters();
@@ -573,53 +535,11 @@ public class MDBPlugin extends PlayPlugin
 		
 		try
 		{
-			ComboPooledDataSource ds = makeDatasource(dbParm);
-			synchronized (MDB.datasources)
+			synchronized (MDB.credentials)
 			{
-				MDB.datasources.put(dbParm.key, ds);
+				MDB.credentials.put(dbParm.key, dbParm);
 			}
-			Connection c = null;
-			try
-			{
-				c = ds.getConnection();
-				
-				List<Class> classes = Play.classloader.getAnnotatedClasses(Entity.class);
-				if (classes.isEmpty()
-						&& Play.configuration.getProperty("jpa.entities", "").equals(""))
-				{
-					return;
-				}
-				//
-				//	Now, add the datasource into the MJPAPlugin
-				//
-				Ejb3Configuration cfg = MJPAPlugin.buildEjbConfiguration(classes, ds);
-				
-				Logger.trace("Initializing JPA ...");
-				try
-				{
-					EntityManagerFactory factory = cfg.buildEntityManagerFactory(); 
-					JPA.entityManagerFactory = factory;
-					
-					synchronized (MJPAPlugin.factoryMap)
-					{
-						MJPAPlugin.factoryMap.put(dbParm.key, factory);
-					}
-				}
-				catch (PersistenceException e)
-				{
-					throw new JPAException(e.getMessage(), e.getCause() != null
-							? e.getCause() : e);
-				}
-				
-			}
-			finally
-			{
-				if (c != null)
-				{
-					c.close();
-				}
-			}
-			Logger.info("Connected to %s", ds.getJdbcUrl());
+			Logger.info("Connected to %s", dbParm.url);
 		}
 		catch (Exception e)
 		{

@@ -18,7 +18,9 @@ public class MDB
 	/**
 	 * The loaded datasources.  This accepts a 
 	 */
-	public static Map<String, DataSource> datasources = null;
+	public static Map<Object, Object> datasources = null;
+	public static Map<String, DbParameters> credentials = null;
+	public static RoutingDataSource mainDataSource = null;
 
 	/**
 	 * Close the connection opened for the current thread.
@@ -64,7 +66,7 @@ public class MDB
 			{
 				return localConnection.get();
 			}
-			Connection connection = datasources.get(dbKey).getConnection();
+			Connection connection = ((DataSource)datasources.get(dbKey)).getConnection();
 			localConnection.set(connection);
 			return connection;
 		}
