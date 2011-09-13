@@ -10,6 +10,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Map.Entry;
@@ -17,10 +18,15 @@ import java.util.Map.Entry;
 import javax.sql.DataSource;
 
 import org.apache.commons.lang.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import play.Logger;
 import play.Play;
 import play.PlayPlugin;
+import play.db.jpa.DomainDBKeyExtractor;
+import play.db.jpa.RequestDBKeyExtractor;
+import play.exceptions.JPAException;
 
 import com.mchange.v2.c3p0.ComboPooledDataSource;
 
@@ -29,6 +35,8 @@ import com.mchange.v2.c3p0.ComboPooledDataSource;
  */
 public class MDBPlugin extends PlayPlugin
 {
+
+	public static Log log = LogFactory.getLog(MDBPlugin.class);
 
 	private static final String MDB_ALL_KEY = "all";
 	private static final String MDB_DBCONF_KEY = "db";
@@ -44,13 +52,21 @@ public class MDBPlugin extends PlayPlugin
 	public static final String MDB_KEY_PREFIX = MDB_CONF_PREFIX + "key.";
 	public static final String MDB_SQLCONF_PREFIX = MDB_CONF_PREFIX + "sql.";
 	public static final String MDB_URLPREFIXCONF_PREFIX = MDB_CONF_PREFIX + "urlprefix.";
+	public static final String MDB_DEFAULSCHEMA = MDB_CONF_PREFIX + "defaultschema.";
+
+	private static Map<Object, Object> datasources = null;
+
+	/**
+	 * The default key extractor, if none is defined within the application classes.
+	 */
+	public static RequestDBKeyExtractor keyExtractor = new DomainDBKeyExtractor();
 
 	@Override
 	public void onApplicationStart()
 	{
 		if (changed())
 		{
-			MDB.datasources = new HashMap<Object, Object>();
+			datasources = new HashMap<Object, Object>();
 			MDB.credentials = new HashMap<String, DbParameters>();
 			Map<String, DbParameters> dbMap = new HashMap<String, DbParameters>();
 			try
@@ -97,10 +113,50 @@ public class MDBPlugin extends PlayPlugin
 					Logger.error(e, "Cannot connect to the database [" + parm.getKey() + "]: %s", e.getMessage());
 				}
 			}
-			if (MDB.mainDataSource != null) {
-				MDB.mainDataSource.afterPropertiesSet();
-
+			// Check if we have datasource, and so create teh Routing datasource and save it in the generic DB.datasource
+			if (datasources != null && datasources.size() > 0) {
+				if (DB.datasource == null) {
+					// Create RoutingDataSource
+					RoutingDataSource routingDataSource = new RoutingDataSource();
+					routingDataSource.setTargetDataSources(datasources);
+//					routingDataSource.setDefaultTargetDataSource(datasources.entrySet().iterator().next());
+					routingDataSource.setLenientFallback(false);
+					routingDataSource.afterPropertiesSet();
+					DB.datasource = routingDataSource;
+				}
 			}
+		}
+
+		//
+		//	Set up the key extractor here, by looking for an application class that implements it.
+		//
+		List<Class> extractors = Play.classloader.getAssignableClasses(RequestDBKeyExtractor.class);
+		if (extractors.size() > 1)
+		{
+			throw new JPAException("Too many DB Key extract classes.  " +
+					"The Multiple DB plugin must use a single extractor class to " +
+					"specify its extractor.  These classes where found: " + extractors);
+		}
+		else if (!extractors.isEmpty())
+		{
+			Class clazz = extractors.get(0);
+			try
+			{
+				keyExtractor = (RequestDBKeyExtractor) clazz.newInstance();
+			}
+			catch (InstantiationException e)
+			{
+				log.error("Unable to instantiate extractor class:",e);
+			}
+			catch (IllegalAccessException e)
+			{
+				log.error("Invalid access to extractor class:",e);
+			}
+			log.debug("Using application DB key extractor class: " + keyExtractor.getClass().getName());
+		}
+		else
+		{
+			log.debug("Using default DB key extractor class: " + keyExtractor.getClass().getName());
 		}
 	}
 
@@ -296,6 +352,10 @@ public class MDBPlugin extends PlayPlugin
 		{
 			mapEntry.poolMinSize = propValue;
 		}
+		else if (propKey.startsWith(MDB_DEFAULSCHEMA))
+		{
+			// Not used here, just checked......
+		}
 		else
 		{
 			Logger.warn("Unrecognized MDB key: " + propKey);
@@ -310,7 +370,7 @@ public class MDBPlugin extends PlayPlugin
 		out.println("         Multiple DB sources:");
 		out.println("=================================================");
 		
-		if (MDB.datasources == null || MDB.datasources.isEmpty())
+		if (datasources == null || datasources.isEmpty())
 		{
 			out.println("Datasources:");
 			out.println("~~~~~~~~~~~");
@@ -318,7 +378,7 @@ public class MDBPlugin extends PlayPlugin
 			return sw.toString();
 		}
 		
-		for (Entry<Object, Object> entry : MDB.datasources.entrySet())
+		for (Entry<Object, Object> entry : datasources.entrySet())
 		{
 			if (entry == null || entry.getValue() == null || !(entry.getValue() instanceof DataSource))
 			{
@@ -348,12 +408,6 @@ public class MDBPlugin extends PlayPlugin
 		return sw.toString();
 	}
 
-	@Override
-	public void invocationFinally()
-	{
-		MDB.close();
-	}
-
 	/**
 	 * Creates a connection using the passed database parameters.
 	 * @param parms
@@ -361,17 +415,12 @@ public class MDBPlugin extends PlayPlugin
 	 */
 	private static void makeConnection(DbParameters parms) throws Exception
 	{
+		// Save user schema credentials
 		MDB.credentials.put(parms.key, parms);
-		if (MDB.datasources.get(parms.url) == null) {
+		// Only create datasources per DATABASE and not per SCHEMA
+		if (datasources.get(parms.url) == null) {
 			ComboPooledDataSource ds = makeDatasource(parms);
-			MDB.datasources.put(parms.url, ds);
-			if (MDB.mainDataSource == null) {
-				// Create RoutingDataSource
-				RoutingDataSource routingDataSource = new RoutingDataSource();
-				routingDataSource.setTargetDataSources(MDB.datasources);
-				routingDataSource.setDefaultTargetDataSource(ds);
-				MDB.mainDataSource = routingDataSource;
-			}
+			datasources.put(parms.url, ds);
 		}
 	}
 

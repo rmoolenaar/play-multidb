@@ -7,7 +7,6 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
 
-import play.db.jpa.MJPAPlugin;
 import play.mvc.Http.Request;
 
 public class RoutingDataSource extends AbstractRoutingDataSource {
@@ -29,7 +28,7 @@ public class RoutingDataSource extends AbstractRoutingDataSource {
 	}
 
 	DbParameters getDbParameter() {
-		DbParameters dbParm = MDB.credentials.get(MJPAPlugin.keyExtractor.extractKey(Request.current()));
+		DbParameters dbParm = MDB.credentials.get(MDBPlugin.keyExtractor.extractKey(Request.current()));
 		if (dbParm == null) {
 			return (DbParameters)MDB.credentials.values().toArray()[0];
 		}
